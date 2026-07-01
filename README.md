@@ -11,7 +11,8 @@ Comparative ns-3 simulation study evaluating VoIP quality of service across thre
 ├── ac-ax-be-comparison_final.cc   # ns-3 simulation (all 3 scenarios)
 ├── run_scenario1.sh               # sweep runner — Scenario 1
 ├── results_scenario1.csv          # raw output from Scenario 1
-└── visualize_s1.py                # plots for Scenario 1
+├── visualize_s1.py                # plots for Scenario 1
+└── topology.png                   # network topology diagram
 ```
 
 ---
@@ -20,13 +21,9 @@ Comparative ns-3 simulation study evaluating VoIP quality of service across thre
 
 **Topology** — single BSS, one AP, two station groups:
 
-```
-[STA_voip_0] ... [STA_voip_N]     ←  UDP G.711  ToS=0xb8  EDCA AC_VO
-          \           /
-          [    AP    ]
-          /           \
-[STA_bg_0]  ... [STA_bg_M]        ←  TCP 2 Mbps  ToS=0x00  EDCA AC_BE
-```
+![Network topology](topology.png)
+
+VoIP stations (blue, outer ring) are placed at 10 m from the AP. Background stations (green, inner ring) are placed at 7 m. All positions are static for the duration of the simulation.
 
 **Traffic model**
 
