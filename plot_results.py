@@ -1,98 +1,114 @@
 """
-plot_results.py
-Analyzes ns-3 VoIP simulation results: 802.11ac vs 802.11ax
-Usage: python3 plot_results.py results_bg.csv
+Scenario 1 visualization — RTS/CTS
+Usage: python3 visualize_s1.py --input results_scenario1.csv
 """
 
-import sys
+import argparse
 import pandas as pd
 import matplotlib.pyplot as plt
+import numpy as np
 
-# ── QoS thresholds (ITU-T G.114) ─────────────────────────────────────────────
-QOS_DELAY_MS  = 150.0
-QOS_JITTER_MS =  30.0
-QOS_LOSS_PCT  =   1.0
+# ── argumenty ────────────────────────────────────────────────────────────────
+parser = argparse.ArgumentParser()
+parser.add_argument("--input", default="results_scenario1.csv")
+args = parser.parse_args()
 
-# ── Load CSV (skip repeated header rows) ─────────────────────────────────────
-file = sys.argv[1] if len(sys.argv) > 1 else "~/results_bg.csv"
+# ── load data ───────────────────────────────────────────────────────────────
+df = pd.read_csv(args.input)
+df = df[df["scenario"].astype(str).str.isnumeric()]
+df = df[(df["scenario"].astype(int) == 1) & (df["protocol"] == "UDP")]
 
-df = pd.read_csv(file, header=None, names=[
-    "standard","nVoip","nBg","seed","srcAddr","dstAddr","protocol",
-    "txPkts","rxPkts","lostPkts","lossPct",
-    "meanDelayMs","meanJitterMs","throughputKbps"
-])
-
-# Drop repeated header rows (each simulation run prepends a header line)
-df = df[df["standard"] != "standard"].reset_index(drop=True)
-
-# Cast numeric columns
-for col in ["nVoip","nBg","seed","txPkts","rxPkts","lostPkts",
-            "lossPct","meanDelayMs","meanJitterMs","throughputKbps"]:
+for col in ["nVoip", "lossPct", "meanDelayMs", "meanJitterMs"]:
     df[col] = pd.to_numeric(df[col], errors="coerce")
+df["nVoip"] = df["nVoip"].astype(int)
 
-# ── Keep only VoIP UDP flows, drop TCP background flows ──────────────────────
-voip = df[df["protocol"] == "UDP"].copy()
+# ── aggregate: mean, std and sample size by standard/mode/nVoip ───────────
+agg = df.groupby(["standard", "rtsCtsMode", "nVoip"]).agg(
+    delay_mean  = ("meanDelayMs",  "mean"),
+    delay_std   = ("meanDelayMs",  "std"),
+    jitter_mean = ("meanJitterMs", "mean"),
+    jitter_std  = ("meanJitterMs", "std"),
+    loss_mean   = ("lossPct",      "mean"),
+    loss_std    = ("lossPct",      "std"),
+    n           = ("meanDelayMs",  "count"),
+).reset_index()
 
-# Each station has uplink + downlink flow — average both into one value per run
-per_run = voip.groupby(["standard","nVoip","seed"], as_index=False).agg(
-    delay  = ("meanDelayMs",    "mean"),
-    jitter = ("meanJitterMs",   "mean"),
-    loss   = ("lossPct",        "mean"),
-    tput   = ("throughputKbps", "mean"),
-)
+# 95% CI for each metric
+z = 1.96
+agg["delay_ci"] = z * agg["delay_std"] / np.sqrt(agg["n"])
+agg["jitter_ci"] = z * agg["jitter_std"] / np.sqrt(agg["n"])
+agg["loss_ci"] = z * agg["loss_std"] / np.sqrt(agg["n"])
 
-# Average across seeds → one row per (standard, nVoip)
-agg = per_run.groupby(["standard","nVoip"], as_index=False).agg(
-    delay_mean  = ("delay",  "mean"),
-    jitter_mean = ("jitter", "mean"),
-    loss_mean   = ("loss",   "mean"),
-    tput_mean   = ("tput",   "mean"),
-)
+# ── colors and line styles ─────────────────────────────────────────────────
+COLORS = {"off": "#3266ad", "all": "#e07b39", "tcponly": "#2d9e75"}
+DASH   = {"off": "-",       "all": "--",      "tcponly": ":"}
+MODES  = ["off", "all", "tcponly"]
+STDS   = ["ac", "ax", "be"]
+NV     = [2, 5, 10, 15, 20]
 
-ac = agg[agg["standard"] == "ac"].sort_values("nVoip")
-ax_df = agg[agg["standard"] == "ax"].sort_values("nVoip")
+# ── figure: 3 rows × 3 columns ─────────────────────────────────────────────
+fig, axes = plt.subplots(3, 3, figsize=(14, 10))
+fig.suptitle("Scenario 1 — RTS/CTS impact on VoIP QoS", fontsize=13)
 
-# ── Plot 2x2 grid ─────────────────────────────────────────────────────────────
-fig, axes = plt.subplots(2, 2, figsize=(11, 7))
-fig.suptitle("VoIP QoS — 802.11ac vs 802.11ax (5 GHz, 80 MHz, G.711)",
-             fontsize=13, fontweight="bold")
+METRICS = [
+    ("delay",  "Delay [ms]",          150, "ITU-T 150 ms"),
+    ("jitter", "Jitter [ms]",         30, "ITU-T 30 ms"),
+    ("loss",   "Packet loss [%]",     1,  "ITU-T 1 %"),
+]
 
-AC_STYLE = dict(color="#E85D24", marker="o", linewidth=2, markersize=7, label="802.11ac")
-AX_STYLE = dict(color="#1D9E75", marker="s", linewidth=2, markersize=7, label="802.11ax")
+for row, (metric, ylabel, threshold, tlabel) in enumerate(METRICS):
+    for col, std in enumerate(STDS):
+        ax = axes[row][col]
+        sub = agg[agg["standard"] == std]
 
-def draw(ax_obj, metric, ylabel, title, threshold=None):
-    ax_obj.plot(ac["nVoip"].values,    ac[metric].values,    **AC_STYLE)
-    ax_obj.plot(ax_df["nVoip"].values, ax_df[metric].values, **AX_STYLE)
-    if threshold is not None:
-        ax_obj.axhline(threshold, color="crimson", linestyle=":",
-                       linewidth=1.5, label=f"QoS limit = {threshold}")
-    ax_obj.set_title(title)
-    ax_obj.set_xlabel("Number of VoIP stations")
-    ax_obj.set_ylabel(ylabel)
-    ax_obj.legend()
-    ax_obj.grid(alpha=0.3, linestyle="--")
-    ax_obj.spines["top"].set_visible(False)
-    ax_obj.spines["right"].set_visible(False)
+        for mode in MODES:
+            m = sub[sub["rtsCtsMode"] == mode].sort_values("nVoip")
+            if m.empty:
+                continue
+            ci = 1.96 * m[f"{metric}_std"] / np.sqrt(m["n"])
+            ax.plot(m["nVoip"], m[f"{metric}_mean"],
+                    color=COLORS[mode], linestyle=DASH[mode],
+                    linewidth=2, marker="o", markersize=5,
+                    label=f"RTS/CTS {mode}")
+            ax.fill_between(m["nVoip"],
+                            m[f"{metric}_mean"] - ci,
+                            m[f"{metric}_mean"] + ci,
+                            color=COLORS[mode], alpha=0.12, linewidth=0)
 
-draw(axes[0,0], "delay_mean",  "Mean delay [ms]",   "End-to-end delay",  QOS_DELAY_MS)
-draw(axes[0,1], "jitter_mean", "Mean jitter [ms]",  "Jitter",            QOS_JITTER_MS)
-draw(axes[1,0], "loss_mean",   "Packet loss [%]",   "Packet loss ratio", QOS_LOSS_PCT)
-draw(axes[1,1], "tput_mean",   "Throughput [kbps]", "VoIP throughput per station")
+        # set Y range based on data (not the ITU-T threshold)
+        vals = sub[sub["rtsCtsMode"].isin(MODES)][f"{metric}_mean"].dropna()
+        if not vals.empty:
+            ymax = vals.max() * 1.25
+            ymin = max(0, vals.min() * 0.8)
+            ax.set_ylim(ymin, ymax)
 
-plt.tight_layout()
-plt.savefig("voip_qos_comparison.png", dpi=150, bbox_inches="tight")
-print("Saved: voip_qos_comparison.png")
+        ax.axhline(threshold, color="crimson", linewidth=1,
+                   linestyle="--", alpha=0.7)
+        # threshold label only if it fits in the current y range
+        ylim = ax.get_ylim()
+        if ylim[0] <= threshold <= ylim[1]:
+            ax.text(NV[-1], threshold * 1.04, tlabel,
+                    color="crimson", fontsize=7.5, ha="right")
 
-# ── Capacity summary printed to console ───────────────────────────────────────
-print("\n── VoIP capacity (max stations within all QoS limits) ──")
-for std, data in [("ac", ac), ("ax_df", ax_df)]:
-    label = std.replace("_df", "")
-    ok = data[
-        (data["delay_mean"]  < QOS_DELAY_MS)  &
-        (data["jitter_mean"] < QOS_JITTER_MS) &
-        (data["loss_mean"]   < QOS_LOSS_PCT)
-    ]
-    cap = int(ok["nVoip"].max()) if not ok.empty else 0
-    print(f"  802.11{label}: {cap} stations")
+        if row == 0:
+            ax.set_title(f"802.11{std.upper()}", fontsize=10)
+        if col == 0:
+            ax.set_ylabel(ylabel)
+        ax.set_xlabel("Number of VoIP stations")
+        ax.set_xticks(NV)
+        ax.grid(True, alpha=0.25)
 
+# ── shared legend ─────────────────────────────────────────────────────────────
+handles = [
+    plt.Line2D([0], [0], color=COLORS[m], linestyle=DASH[m],
+               linewidth=2, marker="o", markersize=5,
+               label=f"RTS/CTS: {m}")
+    for m in MODES
+]
+fig.legend(handles=handles, loc="lower center", ncol=3,
+           fontsize=10, bbox_to_anchor=(0.5, 0.01))
+
+plt.tight_layout(rect=[0, 0.07, 1, 1])
+plt.savefig("s1_plots.png", dpi=130, bbox_inches="tight")
+print("Saved: s1_plots.png")
 plt.show()
